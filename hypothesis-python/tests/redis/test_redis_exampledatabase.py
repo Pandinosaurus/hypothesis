@@ -24,7 +24,7 @@ from tests.cover.test_database_backend import _database_conforms_to_listener_api
 
 
 def FakeRedis(**kwargs):
-    # new warning in Redis 6.0 which fakeredis doens't handle yet
+    # new warning in Redis 6.0 which fakeredis doesn't handle yet
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         return _actual_FakeRedis(**kwargs)
