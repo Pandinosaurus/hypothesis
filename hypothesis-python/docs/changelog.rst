@@ -18,6 +18,50 @@ Hypothesis 6.x
 
     .. include:: ../RELEASE.rst
 
+.. _v6.131.33:
+
+---------------------
+6.131.33 - 2025-05-31
+---------------------
+
+This patch restores compatibility when using `the legacy Python 3.9 LL(1)
+parser <https://docs.python.org/3/whatsnew/3.9.html#new-parser>`__, which
+was accidentally broken since :ref:`version 6.130.13 <v6.130.13>`.
+
+Thanks to Marco Ricci for this fix!
+
+.. _v6.131.32:
+
+---------------------
+6.131.32 - 2025-05-30
+---------------------
+
+:ref:`fuzz_one_input <fuzz_one_input>` now writes :ref:`observability reports <observability>` if observability is enabled, bringing it in line with the behavior of other standard ways to invoke a Hypothesis test.
+
+.. _v6.131.31:
+
+---------------------
+6.131.31 - 2025-05-30
+---------------------
+
+Improve documentation of |@example|.
+
+.. _v6.131.30:
+
+---------------------
+6.131.30 - 2025-05-27
+---------------------
+
+This patch resolves a Pandas FutureWarning (:issue:`4400`) caused by indexing with an integer key.
+
+.. _v6.131.29:
+
+---------------------
+6.131.29 - 2025-05-27
+---------------------
+
+The observations passed to |TESTCASE_CALLBACKS| are now dataclasses, rather than dictionaries. The content written to ``.hypothesis/observed`` under ``HYPOTHESIS_EXPERIMENTAL_OBSERVABILITY`` remains the same.
+
 .. _v6.131.28:
 
 ---------------------
@@ -6909,8 +6953,7 @@ This release consists of some internal refactoring to the shrinker in preparatio
 5.18.0 - 2020-06-22
 -------------------
 
-This release teaches Hypothesis to :ref:`shorten tracebacks <v3.79.2>` for
-:ref:`explicit examples <providing-explicit-examples>`, as we already do
+This release teaches Hypothesis to :ref:`shorten tracebacks <v3.79.2>` for |@example|, as we already do
 for generated examples, so that you can focus on your code rather than ours.
 
 If you have multiple failing explicit examples, they will now all be reported.
@@ -10858,7 +10901,7 @@ and adds a CI check so we don't add new ones.
 This patch fixes two bugs (:issue:`944` and :issue:`1521`), where messages
 about :func:`@seed <hypothesis.seed>` did not check the current verbosity
 setting, and the wrong settings were active while executing
-:ref:`explicit examples <providing-explicit-examples>`.
+explicit examples from |@example|.
 
 .. _v3.71.5:
 
