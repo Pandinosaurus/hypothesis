@@ -14,6 +14,7 @@ import math
 import sys
 import warnings
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from functools import cached_property
 from random import Random
 from sys import float_info
@@ -21,6 +22,7 @@ from types import ModuleType
 from typing import (
     TYPE_CHECKING,
     Any,
+    ClassVar,
     Literal,
     Optional,
     TypedDict,
@@ -62,6 +64,7 @@ from hypothesis.internal.floats import (
     next_up,
 )
 from hypothesis.internal.intervalsets import IntervalSet
+from hypothesis.internal.observability import InfoObservationType, TestCaseObservation
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -70,7 +73,7 @@ if TYPE_CHECKING:
     from hypothesis.internal.constants_ast import ConstantT
 
 T = TypeVar("T")
-_Lifetime: "TypeAlias" = Literal["test_case", "test_function"]
+LifetimeT: "TypeAlias" = Literal["test_case", "test_function"]
 COLLECTION_DEFAULT_MAX_SIZE = 10**10  # "arbitrarily large"
 
 
@@ -271,7 +274,10 @@ def _get_local_constants() -> Constants:
     # careful: store sys.modules length when we first check to avoid race conditions
     # with other threads loading a module before we set _sys_modules_len.
     if (sys_modules_len := len(sys.modules)) != _sys_modules_len:
-        new_modules = set(sys.modules.values()) - _seen_modules
+        # set(_seen_modules) shouldn't typically be required, but I have run into
+        # a "set changed size during iteration" error here when running
+        # test_provider_conformance_crosshair.
+        new_modules = set(sys.modules.values()) - set(_seen_modules)
         # Repeated SortedSet unions are expensive. Do the initial unions on a
         # set(), then do a one-time union with _local_constants after.
         new_constants = Constants()
@@ -294,7 +300,7 @@ def _get_local_constants() -> Constants:
 
 
 class _BackendInfoMsg(TypedDict):
-    type: str
+    type: InfoObservationType
     title: str
     content: Union[str, dict[str, Any]]
 
@@ -343,7 +349,7 @@ class PrimitiveProvider(abc.ABC):
     #: ``ConjectureData`` for a lifetime of ``test_case``.
     #:
     #: Third-party providers likely want to set a lifetime of ``test_function``.
-    lifetime: _Lifetime = "test_function"
+    lifetime: ClassVar[LifetimeT] = "test_function"
 
     #: Solver-based backends such as ``hypothesis-crosshair`` use symbolic values
     #: which record operations performed on them in order to discover new paths.
@@ -353,7 +359,16 @@ class PrimitiveProvider(abc.ABC):
     #:
     #: Setting this to ``True`` disables some hypothesis features and optimizations.
     #: Only set this to ``True`` if it is necessary for your backend.
-    avoid_realization = False
+    avoid_realization: ClassVar[bool] = False
+
+    #: If ``True``, |PrimitiveProvider.on_observation| will be added as a
+    #: callback to |TESTCASE_CALLBACKS|, enabling observability during the lifetime
+    #: of this provider. If ``False``, |PrimitiveProvider.on_observation| will
+    #: never be called by Hypothesis.
+    #:
+    #: The opt-in behavior of observability is because enabling observability
+    #: might increase runtime or memory usage.
+    add_observability_callback: ClassVar[bool] = False
 
     def __init__(self, conjecturedata: Optional["ConjectureData"], /) -> None:
         self._cd = conjecturedata
@@ -474,7 +489,7 @@ class PrimitiveProvider(abc.ABC):
         """
         raise NotImplementedError
 
-    def per_test_case_context_manager(self):
+    def per_test_case_context_manager(self) -> AbstractContextManager:
         """
         Returns a context manager which will be entered each time Hypothesis
         starts generating and executing one test case, and exited when that test
@@ -532,7 +547,7 @@ class PrimitiveProvider(abc.ABC):
         return {}
 
     def observe_information_messages(
-        self, *, lifetime: _Lifetime
+        self, *, lifetime: LifetimeT
     ) -> Iterable[_BackendInfoMsg]:
         """Called at the end of each test case and again at end of the test function.
 
@@ -542,6 +557,41 @@ class PrimitiveProvider(abc.ABC):
         """
         assert lifetime in ("test_case", "test_function")
         yield from []
+
+    def on_observation(self, observation: TestCaseObservation) -> None:  # noqa: B027
+        """
+        Called at the end of each test case which uses this provider, with the same
+        ``observation["type"] == "test_case"`` observation that is passed to
+        other callbacks in |TESTCASE_CALLBACKS|. This method is not called with
+        ``observation["type"] in {"info", "alert", "error"}`` observations.
+
+        .. important::
+
+            For |PrimitiveProvider.on_observation| to be called by Hypothesis,
+            |PrimitiveProvider.add_observability_callback| must be set to ``True``,
+
+            |PrimitiveProvider.on_observation| is explicitly opt-in, as enabling
+            observability might increase runtime or memory usage.
+
+        Calls to this method are guaranteed to alternate with calls to
+        |PrimitiveProvider.per_test_case_context_manager|. For example:
+
+        .. code-block:: python
+
+            # test function starts
+            per_test_case_context_manager()
+            on_observation()
+            per_test_case_context_manager()
+            on_observation()
+            ...
+            # test function ends
+
+        Note that |PrimitiveProvider.on_observation| will not be called for test
+        cases which did not use this provider during generation, for example
+        during |Phase.reuse| or |Phase.shrink|, or because Hypothesis switched
+        to the standard Hypothesis backend after this backend raised too many
+        |BackendCannotProceed| exceptions.
+        """
 
     def span_start(self, label: int, /) -> None:  # noqa: B027  # non-abstract noop
         """Marks the beginning of a semantically meaningful span of choices.
@@ -585,13 +635,14 @@ class HypothesisProvider(PrimitiveProvider):
         p: float = 0.05,
     ) -> Optional["ConstantT"]:
         assert self._random is not None
-        assert self._local_constants is not None
         assert choice_type != "boolean"
-
         # check whether we even want a constant before spending time computing
         # and caching the allowed constants.
         if self._random.random() > p:
             return None
+
+        # note: this property access results in computation being done
+        assert self._local_constants is not None
 
         key = (choice_type, choice_constraints_key(choice_type, constraints))
         if key not in CONSTANTS_CACHE:
