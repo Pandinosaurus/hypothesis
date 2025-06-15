@@ -15,7 +15,7 @@ import textwrap
 import time
 from collections import defaultdict
 from collections.abc import Generator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
@@ -68,6 +68,7 @@ from hypothesis.internal.conjecture.providers import (
 from hypothesis.internal.conjecture.shrinker import Shrinker, ShrinkPredicateT, sort_key
 from hypothesis.internal.escalation import InterestingOrigin
 from hypothesis.internal.healthcheck import fail_health_check
+from hypothesis.internal.observability import Observation, with_observation_callback
 from hypothesis.reporting import base_report, report
 
 #: The maximum number of times the shrinker will reduce the complexity of a failing
@@ -830,18 +831,42 @@ class ConjectureRunner:
             f"{', ' + data.output if data.output else ''}"
         )
 
+    def observe_for_provider(self) -> AbstractContextManager:
+        def on_observation(observation: Observation) -> None:
+            assert observation.type == "test_case"
+            # because lifetime == "test_function"
+            assert isinstance(self.provider, PrimitiveProvider)
+            # only fire if we actually used that provider to generate this observation
+            if not self._switch_to_hypothesis_provider:
+                self.provider.on_observation(observation)
+
+        if (
+            self.settings.backend != "hypothesis"
+            # only for lifetime = "test_function" providers (guaranteed
+            # by this isinstance check)
+            and isinstance(self.provider, PrimitiveProvider)
+            # and the provider opted-in to observations
+            and self.provider.add_observability_callback
+        ):
+            return with_observation_callback(on_observation)
+        return nullcontext()
+
     def run(self) -> None:
         with local_settings(self.settings):
-            try:
-                self._run()
-            except RunIsComplete:
-                pass
-            for v in self.interesting_examples.values():
-                self.debug_data(v)
-            self.debug(
-                "Run complete after %d examples (%d valid) and %d shrinks"
-                % (self.call_count, self.valid_examples, self.shrinks)
-            )
+            # NOTE: For compatibility with Python 3.9's LL(1)
+            # parser, this is written as a nested with-statement,
+            # instead of a compound one.
+            with self.observe_for_provider():
+                try:
+                    self._run()
+                except RunIsComplete:
+                    pass
+                for v in self.interesting_examples.values():
+                    self.debug_data(v)
+                self.debug(
+                    "Run complete after %d examples (%d valid) and %d shrinks"
+                    % (self.call_count, self.valid_examples, self.shrinks)
+                )
 
     @property
     def database(self) -> Optional[ExampleDatabase]:
